@@ -14,5 +14,6 @@
    (:file "config" :depends-on ("package"))
    (:file "util" :depends-on ("package"))
    (:file "process" :depends-on ("config" "util"))
-   (:file "switcher" :depends-on ("process" "util"))))
+   (:file "scheduler" :depends-on ("process" "util"))
+   (:file "test" :depends-on ("scheduler"))))
 
