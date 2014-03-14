@@ -9,6 +9,8 @@
     :documentation "Whether or not this process is alive.")
    (ready :accessor process-ready :initform nil
     :documentation "Whether or not a process has been set up.")
+   (queued :accessor process-queued :initform nil
+    :documentation "Whether or not a process has been queued to run.")
    (mailbox :accessor process-mailbox :initform (make-queue)
     :documentation "The place we check for messages.")
    (message-callback :accessor process-message-callback :initform nil
@@ -20,6 +22,7 @@
                     for the first time.")
    (locks :accessor process-locks :initform (list :active (bt:make-lock)
                                                   :ready (bt:make-lock)
+                                                  :queued (bt:make-lock)
                                                   :mailbox (bt:make-lock)
                                                   :message-callback (bt:make-lock)
                                                   :main (bt:make-lock)
@@ -39,15 +42,25 @@
   `(bt:with-lock-held ((getf (process-locks ,process) ,field))
      ,@body))
 
+(defun mark-process-queued (process)
+  "Mark a process as queued for execution. This keeps us from wasting cycles by
+   queuing up a bunch of process activations (one per message) when we really
+   only need it once since it will clear out all messages in one run."
+  (proclock (process :queued) (setf (process-queued process) t)))
+
 (defun message-poller (process)
   "Grab all messages from the queue and process them."
   (let ((mailbox (proclock (process :mailbox) (process-mailbox process)))
         (msg-callback (proclock (process :message-callback) (process-message-callback process))))
     (if (and mailbox msg-callback)
         (handler-case
-          (loop while (not (jpl-queues:empty? mailbox)) do
-            (let ((message (jpl-queues:dequeue mailbox)))
-              (apply msg-callback message)))
+          (progn
+            ;; grab all our pending messages and process them
+            (loop while (not (jpl-queues:empty? mailbox)) do
+              (let ((message (jpl-queues:dequeue mailbox)))
+                (apply msg-callback message)))
+            ;; mark the process as no longer queued (can now be activate again)
+            (proclock (process :queued) (setf (process-queued process) nil)))
           (t (e) (log:error "process: message poller: ~a" e)))
         (terminate process))))
 
@@ -65,8 +78,7 @@
       (funcall main process)
       (t (e) (log:error "process: main: ~a" e)))
     ;; mark the process as ready
-    (proclock (process :ready)
-      (setf (process-ready process) t))
+    (proclock (process :ready) (setf (process-ready process) t))
     ;; if after running main() we don't have message handling set up, assuming it
     ;; was a run-once process and deactivate it, otherwise replace the main()
     ;; function with a message poller
@@ -97,8 +109,10 @@
                  for val being the hash-values of message do
              (setf (gethash (copy-message key) hash) (copy-message val)))
            hash))
+        ((symbolp message)
+         message)
         ((typep message 'process)
-         (process-id message))
+         (id message))
         (t
          (error 'bad-message))))
 
@@ -121,6 +135,10 @@
 ;;; main API
 ;;; ----------------------------------------------------------------------------
 
+(defun id (process)
+  "Get a process' ID."
+  (process-id process))
+
 (defmacro with-messages (process bind-msg &body body)
   "Called from within a process to set up message handling (otherwise process
    will just quit after it runs its main function)."
@@ -134,23 +152,32 @@
 
 (defmacro receive (process &body clauses)
   "A wrapper around with-messages that utilizes pattern-matching via optima to
-   provide a nice interface for pattern-matched message receival."
+   provide a nice interface for pattern-matched message receival. Also provides
+   a (self) funciton which returns the ID of the current process."
   (let ((message-var (gensym "message")))
     `(with-messages ,process (&rest ,message-var)
-       (match ,message-var
-         ,@(loop for clause in clauses collect
-             `((list ,@(car clause)) (progn ,@(cdr clause))))))))
+       (flet ((self () (id ,process)))
+         (match ,message-var
+           ,@(loop for clause in clauses collect
+               `((list ,@(car clause)) (progn ,@(cdr clause)))))))))
 
 (defun process-ready-p (process)
   "Whether or not a process has been fully set up (and is ready to receive
    messages)."
-  (when process
+  (when (lookup process)
     (proclock (process :ready)
       (process-ready process))))
 
 (defun process-active-p (process)
   "Whether or not a process is active/running."
-  (when process
+  (when (lookup process)
     (proclock (process :active)
       (process-active process))))
+
+(defun process-queued-p (process)
+  "Whether or not the process is in queue for execution (usually this means it
+   has messages waiting)."
+  (when (lookup process)
+    (proclock (process :queued)
+      (process-queued process))))
 

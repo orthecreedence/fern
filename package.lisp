@@ -1,15 +1,18 @@
 (defpackage :fern
   (:use :cl :cl-async-future :optima)
-  (:export :process-id
+  (:export :id
            :with-messages
            :receive
            :process-ready-p
            :process-active-p
+           :process-queued-p
 
            :create-scheduler
            :stop-scheduler
            :process
-           :with-process
+           :define-process
+           :do-spawn
+           :spawn
            :terminate
            :send))
 

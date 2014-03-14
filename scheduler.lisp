@@ -1,15 +1,20 @@
 (in-package :fern)
 
 (define-condition process-not-found () ())
+(define-condition process-not-defined () ())
 
 (defvar *process-queue* (make-queue)
   "Holds a queue of active processes.")
 
-(defvar *process-registry* (make-hash-table :test #'equal)
-  "Maps ids to processes.")
+(defvar *next-id* 0
+  "Holds numerical IDs for processes.")
+(defvar *next-id-lock* (bt:make-lock)
+  "Lock for process ID generator.")
 
-(defvar *process-registry-lock* (bt:make-lock)
-  "Lock for the process registry.")
+(defvar *process-definitions* (make-hash-table :test 'eq)
+  "Holds name -> process definition mappings.")
+(defvar *process-definitions-lock* (bt:make-lock)
+  "Holds LOCK FOR name -> process definition mappings.")
 
 (defclass scheduler ()
   ((name :accessor scheduler-name :initarg :name :initform "slappy"
@@ -36,39 +41,14 @@
 
 (defun activate-process (process)
   "Mark a process for execution."
-  (when (process-active process)
+  (when (and (process-active-p process)
+             (not (process-queued-p process)))
     (jpl-queues:enqueue process *process-queue*)))
 
-(defun format-process-id (id)
-  "Standard function for formatting process ids."
-  (string-downcase (string id)))
-
-(defun register-process (id process)
-  "Register a process id."
-  (bt:with-lock-held (*process-registry-lock*)
-    (setf (gethash (format-process-id id) *process-registry*) process)))
-
-(defun unregister-process (id)
-  "Unregister a process id."
-  (bt:with-lock-held (*process-registry-lock*)
-    (remhash (format-process-id id) *process-registry*)))
-
-(defun lookup (id)
-  "Lookup a process by id."
-  (if (typep id 'process)
-      id
-      (bt:with-lock-held (*process-registry-lock*)
-        (gethash (format-process-id id) *process-registry*))))
-
-(defmacro with-process-by-id ((process &key errorp) &body body)
-  "Gets a process by id (if it's not already a process object)."
-  `(let* ((,process (lookup ,process)))
-     ,(if errorp
-          `(if process
-               (progn ,@body)
-               (error 'process-not-found))
-          `(when ,process
-             ,@body))))
+(defun generate-process-id ()
+  "Get a new process ID (unique)."
+  (bt:with-lock-held (*next-id-lock*)
+    (incf *next-id*)))
 
 ;;; ----------------------------------------------------------------------------
 ;;; main API
@@ -92,27 +72,49 @@
   (when force
     (bt:destroy-thread (scheduler-thread scheduler))))
 
-(defun process (id main-function)
+(defun process (main-function)
   "Create a new process and queue it for execution."
-  (let ((process (make-process main-function :id id :active t)))
-    (register-process id process)
+  (let* ((id (generate-process-id))
+         (process (make-process main-function :id id :active t)))
+    (register-process-id id process)
     (activate-process process)
     process))
 
-(defmacro with-process ((id bind-process) &body body)
+(defmacro define-process (process-type (bind-process) &body body)
   "Convenience wrapper around process function."
-  `(process ,id (lambda (,bind-process) ,@body)))
+  `(progn
+     (bt:with-lock-held (*process-definitions-lock*)
+       (setf (gethash ',process-type *process-definitions*)
+             (lambda ()
+               (process (lambda (,bind-process) ,@body)))))))
+
+(defun do-spawn (process-type)
+  "Spawn a new process of the given type."
+  (let ((process-definition (bt:with-lock-held (*process-definitions-lock*)
+                              (gethash process-type *process-definitions*))))
+    (if process-definition
+        (funcall process-definition)
+        (error 'process-not-defined))))
+
+(defmacro spawn (process-type &optional (args nil args-supplied-p))
+  (let ((process-var (gensym "process")))
+    `(let ((,process-var (do-spawn ',process-type)))
+       (when ,args-supplied-p
+         (send ,process-var ,@args))
+       ,process-var)))
 
 (defun terminate (process)
   "Quit a process."
-  (with-process-by-id (process)
+  (with-process-lookup (process)
     (wipe-process process)
-    (unregister-process (process-id process))))
+    (unregister-process-id (process-id process))
+    (dolist (name (reverse-name-lookup process :clear t)) 
+      (unregister name))))
 
 (defun send (process &rest args)
   "Send a message to a process. MUST be a copyable structure: strings, numbers,
    symbols, or lists thereof."
-  (with-process-by-id (process)
+  (with-process-lookup (process)
     (enqueue-message process args)
     (activate-process process)))
 
