@@ -111,7 +111,7 @@
            hash))
         ((symbolp message)
          message)
-        ((typep message 'process)
+        ((processp message)
          (id message))
         (t
          (error 'bad-message))))
@@ -134,6 +134,10 @@
 ;;; ----------------------------------------------------------------------------
 ;;; main API
 ;;; ----------------------------------------------------------------------------
+
+(defun processp (process)
+  "Is this a process?"
+  (typep process 'process))
 
 (defun id (process)
   "Get a process' ID."

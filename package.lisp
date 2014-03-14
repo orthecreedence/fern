@@ -1,6 +1,7 @@
 (defpackage :fern
   (:use :cl :cl-async-future :optima)
-  (:export :id
+  (:export :processp
+           :id
            :with-messages
            :receive
            :process-ready-p
