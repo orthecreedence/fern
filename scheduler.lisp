@@ -1,7 +1,15 @@
 (in-package :fern)
 
+(define-condition process-not-found () ())
+
 (defvar *process-queue* (make-queue)
   "Holds a queue of active processes.")
+
+(defvar *process-registry* (make-hash-table :test #'equal)
+  "Maps ids to processes.")
+
+(defvar *process-registry-lock* (bt:make-lock)
+  "Lock for the process registry.")
 
 (defclass scheduler ()
   ((name :accessor scheduler-name :initarg :name :initform "slappy"
@@ -31,6 +39,37 @@
   (when (process-active process)
     (jpl-queues:enqueue process *process-queue*)))
 
+(defun format-process-id (id)
+  "Standard function for formatting process ids."
+  (string-downcase (string id)))
+
+(defun register-process (id process)
+  "Register a process id."
+  (bt:with-lock-held (*process-registry-lock*)
+    (setf (gethash (format-process-id id) *process-registry*) process)))
+
+(defun unregister-process (id)
+  "Unregister a process id."
+  (bt:with-lock-held (*process-registry-lock*)
+    (remhash (format-process-id id) *process-registry*)))
+
+(defun lookup (id)
+  "Lookup a process by id."
+  (if (typep id 'process)
+      id
+      (bt:with-lock-held (*process-registry-lock*)
+        (gethash (format-process-id id) *process-registry*))))
+
+(defmacro with-process-by-id ((process &key errorp) &body body)
+  "Gets a process by id (if it's not already a process object)."
+  `(let* ((,process (lookup ,process)))
+     ,(if errorp
+          `(if process
+               (progn ,@body)
+               (error 'process-not-found))
+          `(when ,process
+             ,@body))))
+
 ;;; ----------------------------------------------------------------------------
 ;;; main API
 ;;; ----------------------------------------------------------------------------
@@ -53,23 +92,27 @@
   (when force
     (bt:destroy-thread (scheduler-thread scheduler))))
 
-(defun process (main-function &key name)
+(defun process (id main-function)
   "Create a new process and queue it for execution."
-  (let ((process (make-process main-function :name name :active t)))
+  (let ((process (make-process main-function :id id :active t)))
+    (register-process id process)
     (activate-process process)
     process))
 
-(defmacro with-process ((bind-process &key name) &body body)
+(defmacro with-process ((id bind-process) &body body)
   "Convenience wrapper around process function."
-  `(process (lambda (,bind-process) ,@body) :name ,name))
-
-(defun message (process message)
-  "Send a message to a process. MUST be a copyable structure: strings, numbers,
-   symbols, or lists thereof."
-  (enqueue-message process message)
-  (activate-process process))
+  `(process ,id (lambda (,bind-process) ,@body)))
 
 (defun terminate (process)
   "Quit a process."
-  (wipe-process process))
+  (with-process-by-id (process)
+    (wipe-process process)
+    (unregister-process (process-id process))))
+
+(defun send (process &rest args)
+  "Send a message to a process. MUST be a copyable structure: strings, numbers,
+   symbols, or lists thereof."
+  (with-process-by-id (process)
+    (enqueue-message process args)
+    (activate-process process)))
 

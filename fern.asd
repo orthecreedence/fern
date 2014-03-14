@@ -8,6 +8,7 @@
                #:cl-async 
                #:bordeaux-threads
                #:jpl-queues
+               #:optima
                #:log4cl)
   :components
   ((:file "package")

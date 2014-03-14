@@ -3,8 +3,8 @@
 (define-condition bad-message () ())
 
 (defclass process ()
-  ((name :accessor process-name :initarg :name :initform nil
-    :documentation "Gives our process a name.")
+  ((id :accessor process-id :initarg :id :initform nil
+    :documentation "Gives our process an ID.")
    (active :accessor process-active :initarg :active :initform nil
     :documentation "Whether or not this process is alive.")
    (ready :accessor process-ready :initform nil
@@ -26,13 +26,18 @@
                                                   :first-run (bt:make-lock))
     :documentation "Lock list, ensures consistency when changing the process.")))
 
-(defun make-process (main-function &key name active)
+(defun make-process (main-function &key id active)
   "Create a new process with the given main function."
   (make-instance 'process
-                 :name name
+                 :id id
                  :active active
                  :first-run t
                  :main main-function))
+
+(defmacro proclock ((process field) &body body)
+  "Makes locking syntax easier."
+  `(bt:with-lock-held ((getf (process-locks ,process) ,field))
+     ,@body))
 
 (defun message-poller (process)
   "Grab all messages from the queue and process them."
@@ -42,7 +47,7 @@
         (handler-case
           (loop while (not (jpl-queues:empty? mailbox)) do
             (let ((message (jpl-queues:dequeue mailbox)))
-              (funcall msg-callback message)))
+              (apply msg-callback message)))
           (t (e) (log:error "process: message poller: ~a" e)))
         (terminate process))))
 
@@ -92,6 +97,8 @@
                  for val being the hash-values of message do
              (setf (gethash (copy-message key) hash) (copy-message val)))
            hash))
+        ((typep message 'process)
+         (process-id message))
         (t
          (error 'bad-message))))
 
@@ -110,34 +117,40 @@
     (proclock (process :mailbox) (setf mailbox nil))
     (proclock (process :message-callback) (setf message-callback nil))))
 
-(defmacro proclock ((process field) &body body)
-  "Makes locking syntax easier."
-  `(bt:with-lock-held ((getf (process-locks ,process) ,field))
-     ,@body))
-
 ;;; ----------------------------------------------------------------------------
 ;;; main API
 ;;; ----------------------------------------------------------------------------
 
-(defmacro with-messages (process (bind-msg) &body body)
+(defmacro with-messages (process bind-msg &body body)
   "Called from within a process to set up message handling (otherwise process
    will just quit after it runs its main function)."
   (let ((fn-var (gensym "fn-var"))
         (process-var (gensym "process")))
     `(let* ((,process-var ,process)
-            (,fn-var (lambda (,bind-msg)
+            (,fn-var (lambda ,bind-msg
                        ,@body)))
        (proclock (,process-var :message-callback)
          (setf (process-message-callback ,process-var) ,fn-var)))))
 
+(defmacro receive (process &body clauses)
+  "A wrapper around with-messages that utilizes pattern-matching via optima to
+   provide a nice interface for pattern-matched message receival."
+  (let ((message-var (gensym "message")))
+    `(with-messages ,process (&rest ,message-var)
+       (match ,message-var
+         ,@(loop for clause in clauses collect
+             `((list ,@(car clause)) (progn ,@(cdr clause))))))))
+
 (defun process-ready-p (process)
   "Whether or not a process has been fully set up (and is ready to receive
    messages)."
-  (proclock (process :ready)
-    (process-ready process)))
+  (when process
+    (proclock (process :ready)
+      (process-ready process))))
 
 (defun process-active-p (process)
   "Whether or not a process is active/running."
-  (proclock (process :active)
-    (process-active process)))
+  (when process
+    (proclock (process :active)
+      (process-active process))))
 
