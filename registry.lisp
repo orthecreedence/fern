@@ -1,5 +1,11 @@
 (in-package :fern)
 
+(define-condition process-not-found () ()
+  (:documentation "Thrown when an operation happens on a missing process."))
+
+(define-condition remote-not-allowed (error) ()
+  (:documentation "Thrown when an operation happens on a node that isn't local."))
+
 (defclass registry ()
   ((ids :accessor registry-ids :initform (make-hash-table :test #'eq)
     :documentation "Hash list of id -> process lookups.")
@@ -19,6 +25,38 @@
   "Makes locking syntax easier."
   `(bt:with-lock-held ((getf (registry-locks ,registry) ,field))
      ,@body))
+
+(defun split-id (id/host)
+  "Convert an id in the format 1234@host to (1234 . \"host\"). If host is not
+   present, it will be nil. If id/host is an integer, it's assumed to be local
+   and just returned."
+  (when (numberp id/host)
+    (return-from split-id (cons id/host nil)))
+  (let* ((pos (position #\@ id/host))
+         (id (if pos
+                 (subseq id/host 0 pos)
+                 id/host))
+         (id-num (ignore-errors (parse-integer id)))
+         (id (or id-num id))
+         (host (when pos (subseq id/host (1+ pos)))))
+    (cons id host)))
+
+(defun is-remote (id)
+  "Determine if a process id points to a remote machine."
+  (let* ((id/host (split-id id))
+         (host (cdr id/host)))
+    (and host (not (string= host (machine-instance))))))
+
+(defun lookup (id/name)
+  "Lookup a process by id."
+  (cond ((typep id/name 'process)
+         id/name)
+        ((typep id/name 'number)
+         (reglock (*registry* :ids)
+           (gethash id/name (registry-ids *registry*))))
+        (t
+         (reglock (*registry* :names)
+           (gethash (format-process-name id/name) (registry-names *registry*))))))
 
 (defmacro with-process-lookup ((process &key errorp) &body body)
   "Gets a process by id (if it's not already a process object)."
@@ -57,17 +95,6 @@
   (with-slots (names reverse-names) *registry*
     (reglock (*registry* :names)
       (remhash (format-process-name name) names))))
-
-(defun lookup (id/name)
-  "Lookup a process by id."
-  (cond ((typep id/name 'process)
-         id/name)
-        ((typep id/name 'number)
-         (reglock (*registry* :ids)
-           (gethash id/name (registry-ids *registry*))))
-        (t
-         (reglock (*registry* :names)
-           (gethash (format-process-name id/name) (registry-names *registry*))))))
 
 (defun reverse-name-lookup (process &key clear)
   "Get a list of process names given a process."

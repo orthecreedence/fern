@@ -9,13 +9,16 @@
                #:bordeaux-threads
                #:jpl-queues
                #:optima
+               #:yason
                #:log4cl)
   :components
   ((:file "package")
    (:file "config" :depends-on ("package"))
    (:file "util" :depends-on ("package"))
-   (:file "process" :depends-on ("config" "util"))
-   (:file "registry" :depends-on ("process" "util"))
-   (:file "scheduler" :depends-on ("process" "util" "registry"))
-   (:file "test" :depends-on ("process" "util" "scheduler" "registry"))))
+   (:file "message" :depends-on ("package" "util"))
+   (:file "registry" :depends-on ("util" "config"))
+   (:file "remote" :depends-on ("config" "util" "message" "registry"))
+   (:file "process" :depends-on ("config" "util" "message" "registry" "remote"))
+   (:file "scheduler" :depends-on ("config" "process" "util"))
+   (:file "test" :depends-on ("process" "scheduler"))))
 

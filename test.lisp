@@ -11,16 +11,19 @@
 
     (define-process counter (process)
       (receive process
-        ((msg 0 _)
-         (send :printer (format nil "~a: ~a" (self) msg))
+        (('terminate)
+         (format t "terminating ~a~%" (self))
          (terminate process))
+        ((msg 0 id)
+         (send :printer (format nil "~a: ~a" (self) msg))
+         (send id 'terminate)
+         (send (self) 'terminate))
         ((msg num id)
          (send :printer (format nil "~a: ~a" (self) msg))
          (send id (format nil "~a, (~a ~a)" msg (self) (1- num)) (1- num) (self)))))
 
     (register :printer (spawn printer))
-    (register :counter2 (spawn counter))
-    (register :counter1 (spawn counter ("hai" 3 :counter2)))
+    (spawn counter ("hai" 3 (spawn counter)))
 
     (sleep 1)
     (stop-scheduler scheduler1)
@@ -29,9 +32,7 @@
 
 (defun test-stress ()
   (let ((scheduler1 (create-scheduler))
-        (scheduler2 (create-scheduler))
-        (scheduler3 (create-scheduler))
-        (scheduler4 (create-scheduler)))
+        (scheduler2 (create-scheduler)))
 
     (define-process printer (process)
       (format t "---------------------~%")
@@ -42,16 +43,17 @@
       (receive process
         ((x)
          (send :printer (format nil "res: ~a" x)))
-        (("send" 16)
-         (send :adder 16))
+        (("send" 0)
+         (send :adder 0))
         (("send" num)
          (send :adder num)
-         (send :blabber "send" (1+ num)))))
+         (send :blabber "send" (1- num)))))
 
     (define-process muncher (process)
       (receive process
         (((list x y))
-         (send :adder "munched" (list (+ x 2) (+ y 2))))))
+         (as:with-delay (1)
+           (send :adder "munched" (list (+ x 2) (+ y 2)))))))
 
     (define-process adder (process)
       (receive process
@@ -63,13 +65,11 @@
     (register :printer (spawn printer))
     (register :muncher (spawn muncher))
     (register :adder (spawn adder))
-    (register :blabber (spawn blabber ("send" 0)))
+    (register :blabber (spawn blabber ("send" 1024)))
 
-    (sleep 1)
+    (sleep 5)
     (stop-scheduler scheduler1)
     (stop-scheduler scheduler2)
-    (stop-scheduler scheduler3)
-    (stop-scheduler scheduler4)
 
     (terminate :blabber)
     (terminate :adder)
