@@ -51,8 +51,8 @@
 
 (defun serialize-message (message)
   "Serialize a message into a string we can send to a remote machine."
-  (let ((str (with-output-to-string (s) (yason:encode (message-args message) s))))
-    str))
+  (with-output-to-string (s)
+    (yason:encode (message-args message) s)))
 
 (defun deserialize-message (message-str)
   "Deserialize a message from a string. Looks for the specific object structures
