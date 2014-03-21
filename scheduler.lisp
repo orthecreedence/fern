@@ -28,7 +28,7 @@
 ;;; ----------------------------------------------------------------------------
 
 (defun create-scheduler (&key (name (random 999)))
-  "Create a threaded process scheduler."
+  "Create and start a threaded process scheduler."
   (let* ((scheduler (make-instance 'scheduler :name name :active t))
          (thread (bt:make-thread (lambda ()
                                    (log:debug "scheduler ~a starting" (scheduler-name scheduler))
@@ -39,7 +39,7 @@
     scheduler))
 
 (defun stop-scheduler (scheduler &key force)
-  "Forcibly kill a scheduler."
+  "Stop a scheduler. If :force t is passed, will kill the scheduler's thread."
   (bt:with-lock-held ((scheduler-lock scheduler))
     (setf (scheduler-active scheduler) nil))
   (when force
