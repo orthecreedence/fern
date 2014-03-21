@@ -25,6 +25,7 @@
     :documentation "Whether or not a process has been set up.")
    (queued :accessor process-queued :initform nil
     :documentation "Whether or not a process has been queued to run.")
+   ;; TODO add locking around :event so it can be freed via terminate...
    (timer :accessor process-timer :initform (list :last-run 0
                                                   :timeout nil
                                                   :function nil
@@ -83,7 +84,9 @@
     (jpl-queues:enqueue process *process-queue*)))
 
 (defun message-poller (process)
-  "Grab all messages from the queue and process them."
+  "This is the main function of a process, which replaces the one created by
+   define-process after the process has run for the first time. It checks for
+   messages in the mailbox and also manages the process' timeouts."
   (let ((mailbox (proclock (process :mailbox) (process-mailbox process)))
         (msg-callback (proclock (process :message-callback) (process-message-callback process))))
     (if (and mailbox msg-callback)
@@ -107,7 +110,20 @@
         (terminate process))))
 
 (defun run-process (process)
-  "Runs a process."
+  "Runs a process.
+
+   If this is the process' first run, the main body given to define-process is
+   run. Generally this body does any needed setup and creates a message handler
+   (via receive). If this is the case, the prcoess' main function is replaced by
+   the message-poller function, which both processes incoming messages and
+   manages the process' timeouts (if set by the after macro). It does this until
+   terminated.
+
+   If the define-handler doesn't set up any message handling or timeouts, then
+   after it runs it's terminated. Termination doesn't it's stopped immediately,
+   but instead will finish what it's doing (if anything is async) and not be
+   allowed to take on new work (see the `terminate` function docstring for more
+   details)."
   (let ((active (proclock (process :active) (process-active process)))
         (main (proclock (process :main) (process-main process)))
         (first-run (proclock (process :first-run) (process-first-run process))))
@@ -121,9 +137,9 @@
       (t (e) (log:error "process: main: ~a" e)))
     ;; mark the process as ready
     (proclock (process :ready) (setf (process-ready process) t))
-    ;; if after running main() we don't have message handling set up, assuming it
+    ;; if after running main() we don't have message handling set up, assume it
     ;; was a run-once process and deactivate it, otherwise replace the main()
-    ;; function with a message poller
+    ;; function with the message-poller function
     (if (proclock (process :message-callback)
           (process-message-callback process))
         (when first-run
