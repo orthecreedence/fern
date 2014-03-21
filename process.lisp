@@ -25,6 +25,11 @@
     :documentation "Whether or not a process has been set up.")
    (queued :accessor process-queued :initform nil
     :documentation "Whether or not a process has been queued to run.")
+   (timer :accessor process-timer :initform (list :last-run 0
+                                                  :timeout nil
+                                                  :function nil
+                                                  :event nil)
+    :documentation "Holds information regarding the process timing out.")
    (mailbox :accessor process-mailbox :initform (make-queue)
     :documentation "The place we check for messages.")
    (message-callback :accessor process-message-callback :initform nil
@@ -56,6 +61,10 @@
   `(bt:with-lock-held ((getf (process-locks ,process) ,field))
      ,@body))
 
+(defmacro timerdata (process field)
+  "Grabs timer data."
+  `(getf (process-timer ,process) ,field))
+
 (defun generate-process-id ()
   "Get a new process ID (unique)."
   (bt:with-lock-held (*next-id-lock*)
@@ -79,11 +88,19 @@
         (msg-callback (proclock (process :message-callback) (process-message-callback process))))
     (if (and mailbox msg-callback)
         (handler-case
-          (progn
+          (let ((processed-messages nil))
             ;; grab all our pending messages and process them
             (loop while (not (jpl-queues:empty? mailbox)) do
               (let ((message (jpl-queues:dequeue mailbox)))
+                (setf processed-messages t)
+                ;; so we don't timeout prematurely...
+                (setf (timerdata process :last-run) (get-internal-real-time))
                 (funcall msg-callback message)))
+            ;; if messages were processed, reset the timeout timer (if we've got
+            ;; one)
+            (when (and (timerdata process :timeout)
+                       processed-messages)
+              (reset-timeout process))
             ;; mark the process as no longer queued (can now be activate again)
             (proclock (process :queued) (setf (process-queued process) nil)))
           (t (e) (log:error "process: message poller: ~a" e)))
@@ -146,6 +163,31 @@
     (if process-definition
         (funcall process-definition)
         (error 'process-not-defined))))
+
+(defun reset-timeout (process &key stop-only)
+  "Stop a timeout event and restart the timeout."
+  (let ((event (timerdata process :event))
+        (seconds (timerdata process :timeout)))
+    (when (and event (not (as:event-freed-p event)))
+      (as:free-event event))
+    (unless stop-only
+      (setf (timerdata process :event) (as:delay (timerdata process :function) :time seconds)))))
+
+(defun setup-timeout (process sec timeout-fn)
+  "Set up a timeout on the given process."
+  (format t "timeout setup~%")
+  (setf (timerdata process :timeout) sec)
+  (setf (timerdata process :function)
+        (lambda ()
+          (format t "timeout? ~s~%" (list (get-internal-real-time) (timerdata process :last-run)))
+          (when (and (<= (/ (- (get-internal-real-time) (timerdata process :last-run))
+                            internal-time-units-per-second)
+                         (timerdata process :timeout))
+                     (process-active-p process))
+            (format t "timeout happened~%")
+            (funcall timeout-fn)
+            (terminate process))))
+  (reset-timeout process))
 
 ;;; ----------------------------------------------------------------------------
 ;;; main API
