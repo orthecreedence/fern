@@ -1,4 +1,6 @@
-(in-package :fern)
+(defpackage :fern-test
+  (:use :cl :cl-async-future :fern))
+(in-package :fern-test)
 
 (defun test ()
   (let ((scheduler1 (create-scheduler))
@@ -6,18 +8,22 @@
 
     (define-process printer (process)
       (format t "---------------------~%")
-      (receive process
+      (receive
         ((x) (format t "~a~%" x))))
 
     (define-process counter (process)
-      (receive process
+      (after 2000
+        (format t "YOU'RE DEAD, LAMPSHADE ~a~%" (self)))
+      (receive
         (('terminate)
          (format t "terminating ~a~%" (self))
          (terminate process))
         ((msg 0 id)
          (send :printer (format nil "~a: ~a" (self) msg))
          (send id 'terminate)
-         (send (self) 'terminate))
+         (as:with-delay (4)
+           (format t "terminate that fucker~%")
+           (send (self) 'terminate)))
         ((msg num id)
          (send :printer (format nil "~a: ~a" (self) msg))
          (send id (format nil "~a, (~a ~a)" msg (self) (1- num)) (1- num) (self)))))
@@ -36,11 +42,11 @@
 
     (define-process printer (process)
       (format t "---------------------~%")
-      (receive process
+      (receive
         ((x) (format t "~a~%" x))))
 
     (define-process blabber (process)
-      (receive process
+      (receive
         ((x)
          (send :printer (format nil "res: ~a" x)))
         (("send" 0)
@@ -50,13 +56,13 @@
          (send :blabber "send" (1- num)))))
 
     (define-process muncher (process)
-      (receive process
+      (receive
         (((list x y))
          (as:with-delay (1)
            (send :adder "munched" (list (+ x 2) (+ y 2)))))))
 
     (define-process adder (process)
-      (receive process
+      (receive
         (("munched" (list x y))
          (send :blabber (* x y)))
         ((x)

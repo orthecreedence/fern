@@ -9,7 +9,7 @@
   "Holds LOCK FOR name -> process definition mappings.")
 
 (defvar *process-queue* (make-queue)
-  "Holds a queue of active processes.")
+  "Holds a global queue of active processes.")
 
 (defvar *next-id* 0
   "Holds numerical IDs for processes.")
@@ -201,16 +201,10 @@
   "Get a process' ID."
   (process-id process))
 
-(defmacro define-process (process-type (bind-process) &body body)
-  "Convenience wrapper around process function."
-  `(progn
-     (bt:with-lock-held (*process-definitions-lock*)
-       (setf (gethash ',process-type *process-definitions*)
-             (lambda () (create-process (lambda (,bind-process) ,@body)))))))
-
 (defmacro spawn (process-type &optional (args nil args-supplied-p))
-  "Wrapper around do-spawn that sends in initial arguments to the process being
-   spawned (if specified)."
+  "Spawn a new instance of the process type. If args are passed in, they are
+   sent to the new process as a message. If args are not specified, no message
+   is sent."
   (let ((process-var (gensym "process")))
     `(let ((,process-var (do-spawn ',process-type)))
        (when ,args-supplied-p
@@ -218,7 +212,9 @@
        ,process-var)))
 
 (defun terminate (process)
-  "Quit a process."
+  "Quit a process. Doesn't actually kill everything the process is doing, but
+   marks it as inactive and removes all pending messages. This means that the
+   process will finish up what it's doing, but won't take on any new work."
   (with-process-lookup (process)
     (wipe-process process)
     (unregister-process-id (process-id process))
@@ -245,16 +241,26 @@
        (proclock (,process-var :message-callback)
          (setf (process-message-callback ,process-var) ,fn-var)))))
 
-(defmacro receive (process &body clauses)
-  "A wrapper around with-messages that utilizes pattern-matching via optima to
-   provide a nice interface for pattern-matched message receival. Also provides
-   a (self) funciton which returns the ID of the current process."
-  (let ((message-var (gensym "message")))
-    `(with-messages ,process (,message-var)
-       (flet ((self () (id ,process)))
-         (match (message-args ,message-var)
-           ,@(loop for clause in clauses collect
-               `((list ,@(car clause)) ,@(cdr clause))))))))
+(defmacro with-process-helpers (process &body body)
+  "Define some helper functions/macros for the process' body."
+  `(flet ((self () (id ,process)))
+     (macrolet ((receive (&body clauses)
+                  (let ((message-var (gensym "message")))
+                    `(with-messages ,',process (,message-var)
+                       (match (message-args ,message-var)
+                         ,@(loop for clause in clauses collect
+                             `((list ,@(car clause)) ,@(cdr clause)))))))
+                (after (ms &body body)
+                  `(setup-timeout ,',process (/ ,ms 1000) (lambda () ,@body))))
+       ,@body)))
+
+(defmacro define-process (process-type (bind-process) &body body)
+  "Convenience wrapper around process function."
+  `(progn
+     (bt:with-lock-held (*process-definitions-lock*)
+       (setf (gethash ',process-type *process-definitions*)
+             (lambda () (create-process (lambda (,bind-process)
+                                          (fern::with-process-helpers ,bind-process ,@body))))))))
 
 (defun process-ready-p (process)
   "Whether or not a process has been fully set up (and is ready to receive

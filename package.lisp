@@ -3,14 +3,18 @@
   (:export :messagep
            :message-args
 
+           :register
+
            :processp
            :id
-           :define-process
            :spawn
            :terminate
            :send
            :with-messages
+           :define-process
            :receive
+           :after
+           :self
            :process-ready-p
            :process-active-p
            :process-queued-p
