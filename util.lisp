@@ -6,7 +6,10 @@
                  :queue (make-instance 'jpl-queues:unbounded-fifo-queue)))
 
 (defun cons-map (fn list)
-  "A looper that can handle cons cells."
+  "A looper that can handle cons cells:
+
+     (cons-map (lambda (x) (+ x 4)) '(1 2 . 3))
+       => (5 6 . 7)"
   (let* ((cur (car list))
          (next (cdr list))
          (res nil))
@@ -25,13 +28,19 @@
   "Recursively call a function for each leaf in a tree, collecting the results
    as we go along. Works on lists, arrays, and hash tables (calls the given
    function for the keys *and* values of the hash).
-   
+
    Allows specifying a replace function which is called for each value passed
    through (atoms, lists, arrays, hash tables) and when it returns a value, will
    return that value for the form, completely ignoring the value of the actual
    list/array/hash. This allows very specific value replacement. For instance,
    if you want to recurse over a tree, but every time you see the list '(1 2 3)
-   return the symbol 'X, this lets you do that."
+   return the symbol 'X, this lets you do that:
+
+     (recurse-tree '(1 2 (1 2 3) 4) '1+
+                   :replace (lambda (x)
+                              (when (equalp x '(1 2 3))
+                                'harl)))
+       => (2 3 HARL 5)"
   (let* ((replace-val (and replace (funcall replace tree))))
     (when replace-val (return-from recurse-tree replace-val))
     (cond ((stringp tree)
